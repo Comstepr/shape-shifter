@@ -17,13 +17,16 @@ const voiceSelect = document.getElementById("voice-select");
 const config = {
   baseRadius: 220,
   ballRadius: 12,
-  ballSpeed: 220, // pixels per second
+  ballSpeed: 180, // pixels per second
   backgroundColor: "#09091c",
   polygonColor: "#2176ff",
   ballColor: "#ffdd57",
   trailColor: "rgba(255, 221, 87, 0.15)",
-  bounceSpeedGain: 12, // pixels per bounce
+  bounceSpeedGain: 20, // pixels per bounce
   maxSpeed: 1200,
+  gravity: 540, // pixels per second squared
+  restitution: 1.08,
+  tangentDamping: 0.995,
 };
 
 const specialNames = new Map([
@@ -66,7 +69,7 @@ let currentSpeed = config.ballSpeed;
 
 const ball = {
   position: { x: canvas.width / 2, y: canvas.height / 2 },
-  velocity: randomVelocity(),
+  velocity: { x: 0, y: 0 },
 };
 
 let lastTick = null;
@@ -78,6 +81,13 @@ let accelEnabled = true;
 let fpsAccumulator = 0;
 let framesThisSecond = 0;
 let lastFpsUpdate = performance.now();
+const basePhysics = {
+  gravity: config.gravity,
+  bounceGain: config.bounceSpeedGain,
+};
+let activeGravity = basePhysics.gravity;
+let activeBounceGain = basePhysics.bounceGain;
+let activeMaxSpeed = config.maxSpeed;
 let availableVoices = [];
 let selectedVoice = null;
 let selectedVoiceId = null;
@@ -132,12 +142,14 @@ function computeInwardNormal(a, b, center) {
   return normal;
 }
 
-function randomVelocity() {
-  const angle = Math.random() * Math.PI * 2;
-  return {
-    x: Math.cos(angle) * currentSpeed,
-    y: Math.sin(angle) * currentSpeed,
-  };
+function randomVelocity(speed = currentSpeed) {
+  if (speed <= 0) {
+    return { x: 0, y: 0 };
+  }
+  const horizontalSign = Math.random() < 0.5 ? -1 : 1;
+  const vx = horizontalSign * speed;
+  const vy = (Math.random() - 0.5) * 0.2 * speed;
+  return { x: vx, y: vy };
 }
 
 function polygonName(sides) {
@@ -219,9 +231,11 @@ function announceShape() {
 }
 
 function update(deltaTime) {
-  if (paused) {
+  if (!started || paused) {
     return;
   }
+
+  ball.velocity.y += activeGravity * deltaTime;
 
   ball.position.x += ball.velocity.x * deltaTime;
   ball.position.y += ball.velocity.y * deltaTime;
@@ -241,8 +255,17 @@ function update(deltaTime) {
       ball.position.y += edge.normal.y * penetration;
 
       const velDot = ball.velocity.x * edge.normal.x + ball.velocity.y * edge.normal.y;
-      ball.velocity.x -= 2 * velDot * edge.normal.x;
-      ball.velocity.y -= 2 * velDot * edge.normal.y;
+  if (velDot < 0) {
+    const impulse = (1 + config.restitution) * velDot;
+    ball.velocity.x -= impulse * edge.normal.x;
+    ball.velocity.y -= impulse * edge.normal.y;
+      }
+
+      const postDot = ball.velocity.x * edge.normal.x + ball.velocity.y * edge.normal.y;
+      const tangentX = ball.velocity.x - postDot * edge.normal.x;
+      const tangentY = ball.velocity.y - postDot * edge.normal.y;
+      ball.velocity.x = postDot * edge.normal.x + tangentX * config.tangentDamping;
+      ball.velocity.y = postDot * edge.normal.y + tangentY * config.tangentDamping;
     }
   }
 
@@ -251,10 +274,18 @@ function update(deltaTime) {
     polygon = buildPolygon(totalSides);
     announceShape();
     if (accelEnabled) {
-      const targetSpeed = Math.min(currentSpeed + config.bounceSpeedGain, config.maxSpeed);
-      setBallSpeed(targetSpeed);
-      updateSpeedUI(currentSpeed);
+      const currentMagnitude = Math.hypot(ball.velocity.x, ball.velocity.y);
+      const desired = Math.max(currentMagnitude + activeBounceGain, currentSpeed);
+      const targetSpeed = Math.min(desired, config.maxSpeed);
+      ensureMinimumSpeed(targetSpeed);
     }
+  }
+
+  const speedMagnitude = Math.hypot(ball.velocity.x, ball.velocity.y);
+  if (speedMagnitude > activeMaxSpeed) {
+    const scale = activeMaxSpeed / speedMagnitude;
+    ball.velocity.x *= scale;
+    ball.velocity.y *= scale;
   }
 }
 
@@ -302,6 +333,7 @@ function tick(now) {
 function init() {
   announceShape();
   wireControls();
+  refreshPhysicsForSpeed();
   updateElapsedDisplay();
   updateControlAvailability();
   resetFpsTracking();
@@ -311,15 +343,36 @@ function init() {
 function setBallSpeed(speed) {
   const clamped = Math.min(speed, config.maxSpeed);
   currentSpeed = clamped;
+  refreshPhysicsForSpeed();
+  activeMaxSpeed = Math.max(currentSpeed, 80);
+  if (!started) {
+    return;
+  }
   const magnitude = Math.hypot(ball.velocity.x, ball.velocity.y);
   if (magnitude > 0) {
     const scale = currentSpeed / magnitude;
     ball.velocity.x *= scale;
     ball.velocity.y *= scale;
   } else {
-    const fresh = randomVelocity();
+    const fresh = randomVelocity(clamped || config.ballSpeed);
     ball.velocity.x = fresh.x;
     ball.velocity.y = fresh.y;
+  }
+}
+
+function ensureMinimumSpeed(minSpeed) {
+  const speed = Math.hypot(ball.velocity.x, ball.velocity.y);
+  if (speed < minSpeed) {
+    if (speed === 0) {
+      const fallback = minSpeed || currentSpeed || config.ballSpeed;
+      const fresh = randomVelocity(fallback);
+      ball.velocity.x = fresh.x;
+      ball.velocity.y = fresh.y;
+      return;
+    }
+    const scale = minSpeed / speed;
+    ball.velocity.x *= scale;
+    ball.velocity.y *= scale;
   }
 }
 
@@ -334,7 +387,7 @@ function updateElapsedDisplay() {
 }
 
 function updateFpsDisplay() {
-  if (!fpsLabel) {
+  if (!fpsLabel || !started) {
     return;
   }
   const now = performance.now();
@@ -357,6 +410,21 @@ function resetFpsTracking() {
   if (fpsLabel) {
     fpsLabel.textContent = started ? "-- fps" : "0 fps";
   }
+}
+
+function applyInitialNudge() {
+  const baseSpeed = Math.max(60, Math.min(currentSpeed * 0.7, activeMaxSpeed * 0.65));
+  const direction = Math.random() < 0.5 ? -1 : 1;
+  ball.velocity.x = direction * baseSpeed;
+  ball.velocity.y = 0;
+}
+
+function refreshPhysicsForSpeed() {
+  const factor = Math.max(currentSpeed / config.ballSpeed, 0.35);
+  activeGravity = basePhysics.gravity * Math.max(factor * 0.9, 0.35);
+  const bounceFactor = 1.1 + factor * 0.9;
+  activeBounceGain = basePhysics.bounceGain * bounceFactor;
+  activeMaxSpeed = Math.min(Math.max(currentSpeed * (1.9 + factor * 0.55), 320), config.maxSpeed);
 }
 
 function updateSpeedUI(speed) {
@@ -406,6 +474,11 @@ function startSimulation() {
   const now = performance.now();
   startTime = now;
   lastTick = now;
+  refreshPhysicsForSpeed();
+  activeMaxSpeed = Math.max(currentSpeed, 80);
+  ball.position.x = canvas.width / 2;
+  ball.position.y = canvas.height / 2;
+  applyInitialNudge();
   resetFpsTracking();
   updateElapsedDisplay();
   updateControlAvailability();
@@ -541,9 +614,7 @@ function initVoices() {
 
 function wireControls() {
   if (speedSlider) {
-    speedSlider.value = config.ballSpeed.toString();
-    const initialSpeed = Number(speedSlider.value);
-    setBallSpeed(initialSpeed);
+    speedSlider.value = currentSpeed.toString();
     updateSpeedUI(currentSpeed);
   }
 
@@ -607,8 +678,11 @@ function wireControls() {
     polygon = buildPolygon(totalSides);
     ball.position.x = canvas.width / 2;
     ball.position.y = canvas.height / 2;
-    ball.velocity = randomVelocity();
-    setBallSpeed(config.ballSpeed);
+    ball.velocity.x = 0;
+    ball.velocity.y = 0;
+    refreshPhysicsForSpeed();
+    activeMaxSpeed = Math.max(currentSpeed, 80);
+    applyInitialNudge();
     paused = false;
     const now = performance.now();
     lastTick = now;
@@ -621,11 +695,9 @@ function wireControls() {
     if (accelToggle) {
       accelToggle.checked = accelEnabled;
     }
-    if (speedSlider) {
-      speedSlider.value = config.ballSpeed.toString();
-    }
     updateSpeedUI(currentSpeed);
     updateElapsedDisplay();
+    resetFpsTracking();
     updateControlAvailability();
   });
 

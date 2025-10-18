@@ -5,6 +5,7 @@ Shape Shifter is a browser-based playground that begins with a triangle and a ba
 ## Features
 
 - **Infinite polygon evolution** – The ball bounces inside a regular polygon that gains a side on every collision.
+- **Gravity-driven motion** – Starts with a natural drop, uses gravity, restitution, and damping for realistic bounces.
 - **Accurate naming** – Includes conventional names up to icosagon and generates systematic names beyond that.
 - **Speech-friendly** – Optional text-to-speech with selectable voices (once the browser exposes them).
 - **Physics tweaks** – Adjustable speed slider, optional acceleration per bounce, pause/resume/reset controls.
@@ -34,7 +35,7 @@ shape-project/
 
 ## Customisation Tips
 
-- **Ball speed** – Adjust the slider during runtime, or edit `config.ballSpeed` in `script.js`.
+- **Ball speed** – Adjust the slider during runtime; it scales gravity, bounce energy, and the initial nudge. To change the baseline, edit `config.ballSpeed` in `script.js`.
 - **Acceleration gain** – Tweak `config.bounceSpeedGain` to control speed increase per bounce.
 - **Voice preference logic** – Modify the `voiceQualityScore` function in `script.js` to change how voices are ranked.
 - **Polygon appearance** – Update the canvas styling in `index.html` or draw trails/gradients in `script.js`.
