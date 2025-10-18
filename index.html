@@ -37,12 +37,51 @@
       opacity: 0.85;
     }
 
-    canvas {
+    .scene-wrapper {
+      position: relative;
       width: min(80vw, 600px);
-      height: min(80vw, 600px);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
       background: rgba(12, 12, 28, 0.85);
       border-radius: 20px;
       box-shadow: 0 1.5rem 3rem rgba(0, 0, 0, 0.35);
+    }
+
+    .hud {
+      position: absolute;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.4rem 0.8rem;
+      border-radius: 999px;
+      font-size: 0.9rem;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.03em;
+      color: rgba(244, 244, 255, 0.92);
+      background: linear-gradient(135deg, rgba(36, 48, 110, 0.7), rgba(23, 34, 78, 0.7));
+      backdrop-filter: blur(6px);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+    }
+
+    .hud-side-count {
+      top: 0.85rem;
+      left: 0.85rem;
+    }
+
+    .hud-elapsed {
+      top: 0.85rem;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .hud-fps {
+      top: 0.85rem;
+      right: 0.85rem;
     }
 
     .controls {
@@ -88,6 +127,16 @@
       box-shadow: 0 12px 22px rgba(17, 56, 194, 0.45);
     }
 
+    select {
+      min-width: clamp(140px, 35vw, 220px);
+      padding: 0.45rem 0.6rem;
+      border-radius: 12px;
+      border: 1px solid rgba(90, 110, 255, 0.35);
+      background: rgba(15, 20, 60, 0.6);
+      color: inherit;
+      font-size: 0.95rem;
+    }
+
     label {
       font-size: 0.95rem;
       font-weight: 500;
@@ -110,22 +159,46 @@
     <h1>Shape Shifter</h1>
     <div id="shape-name">Triangle</div>
   </header>
-  <canvas id="scene" width="600" height="600"></canvas>
+  <div class="scene-wrapper">
+    <canvas id="scene" width="600" height="600"></canvas>
+    <div class="hud hud-side-count">
+      <span id="side-count">3 sides</span>
+    </div>
+    <div class="hud hud-elapsed">
+      <span id="elapsed">0.0s</span>
+    </div>
+    <div class="hud hud-fps">
+      <span id="fps">0 fps</span>
+    </div>
+  </div>
   <section class="controls" aria-label="Animation controls">
     <div class="control-group">
-      <button id="pause-btn" type="button">Pause</button>
+      <button id="start-btn" type="button" disabled>Start</button>
+      <button id="pause-btn" type="button" disabled>Pause</button>
       <button id="resume-btn" type="button" disabled>Resume</button>
-      <button id="reset-btn" type="button">Reset</button>
+      <button id="reset-btn" type="button" disabled>Reset</button>
     </div>
     <div class="control-group">
       <label for="speed-slider">Ball Speed</label>
-      <input id="speed-slider" type="range" min="60" max="400" step="10" value="220">
+      <input id="speed-slider" type="range" min="60" max="1200" step="10" value="220">
       <output id="speed-readout" for="speed-slider">220</output>
     </div>
     <div class="control-group">
       <label>
-        <input id="tts-toggle" type="checkbox" checked>
+        <input id="tts-toggle" type="checkbox">
         Speak shape name
+      </label>
+    </div>
+    <div class="control-group">
+      <label for="voice-select">Voice</label>
+      <select id="voice-select" disabled>
+        <option>Loading voices…</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>
+        <input id="accel-toggle" type="checkbox" checked>
+        Accelerate on bounce
       </label>
     </div>
   </section>

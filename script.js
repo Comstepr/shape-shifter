@@ -1,12 +1,18 @@
 const canvas = document.getElementById("scene");
 const ctx = canvas.getContext("2d");
 const shapeNameLabel = document.getElementById("shape-name");
+const sideCountLabel = document.getElementById("side-count");
+const elapsedLabel = document.getElementById("elapsed");
+const fpsLabel = document.getElementById("fps");
+const startBtn = document.getElementById("start-btn");
 const pauseBtn = document.getElementById("pause-btn");
 const resumeBtn = document.getElementById("resume-btn");
 const resetBtn = document.getElementById("reset-btn");
 const speedSlider = document.getElementById("speed-slider");
 const speedReadout = document.getElementById("speed-readout");
 const ttsToggle = document.getElementById("tts-toggle");
+const accelToggle = document.getElementById("accel-toggle");
+const voiceSelect = document.getElementById("voice-select");
 
 const config = {
   baseRadius: 220,
@@ -16,6 +22,8 @@ const config = {
   polygonColor: "#2176ff",
   ballColor: "#ffdd57",
   trailColor: "rgba(255, 221, 87, 0.15)",
+  bounceSpeedGain: 12, // pixels per bounce
+  maxSpeed: 1200,
 };
 
 const specialNames = new Map([
@@ -54,16 +62,28 @@ const hundredsPrefixes = ["", "hecta", "dihecta", "trihecta", "tetrahecta", "pen
 let totalSides = 3;
 let polygon = buildPolygon(totalSides);
 
+let currentSpeed = config.ballSpeed;
+
 const ball = {
   position: { x: canvas.width / 2, y: canvas.height / 2 },
   velocity: randomVelocity(),
 };
 
-let lastTick = performance.now();
+let lastTick = null;
+let startTime = null;
+let accumulatedTime = 0;
 let paused = false;
-let currentSpeed = config.ballSpeed;
-let ttsEnabled = true;
+let ttsEnabled = false;
+let accelEnabled = true;
+let fpsAccumulator = 0;
+let framesThisSecond = 0;
+let lastFpsUpdate = performance.now();
+let availableVoices = [];
+let selectedVoice = null;
+let selectedVoiceId = null;
 const supportsSpeech = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+let voicesReady = !supportsSpeech;
+let started = false;
 
 function buildPolygon(sides) {
   const vertices = [];
@@ -181,7 +201,10 @@ function speakName(name) {
   }
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(name);
-  utterance.rate = 0.95;
+  if (selectedVoice) {
+    utterance.voice = selectedVoice;
+  }
+  utterance.rate = 1.0;
   utterance.pitch = 1.0;
   window.speechSynthesis.speak(utterance);
 }
@@ -189,6 +212,9 @@ function speakName(name) {
 function announceShape() {
   const label = polygonName(totalSides);
   shapeNameLabel.textContent = label;
+  if (sideCountLabel) {
+    sideCountLabel.textContent = `${totalSides} ${totalSides === 1 ? "side" : "sides"}`;
+  }
   speakName(label);
 }
 
@@ -224,6 +250,11 @@ function update(deltaTime) {
     totalSides += 1;
     polygon = buildPolygon(totalSides);
     announceShape();
+    if (accelEnabled) {
+      const targetSpeed = Math.min(currentSpeed + config.bounceSpeedGain, config.maxSpeed);
+      setBallSpeed(targetSpeed);
+      updateSpeedUI(currentSpeed);
+    }
   }
 }
 
@@ -254,6 +285,9 @@ function render() {
   ctx.fill();
 
   ctx.restore();
+
+  updateElapsedDisplay();
+  updateFpsDisplay();
 }
 
 function tick(now) {
@@ -268,11 +302,15 @@ function tick(now) {
 function init() {
   announceShape();
   wireControls();
-  requestAnimationFrame(tick);
+  updateElapsedDisplay();
+  updateControlAvailability();
+  resetFpsTracking();
+  render();
 }
 
 function setBallSpeed(speed) {
-  currentSpeed = speed;
+  const clamped = Math.min(speed, config.maxSpeed);
+  currentSpeed = clamped;
   const magnitude = Math.hypot(ball.velocity.x, ball.velocity.y);
   if (magnitude > 0) {
     const scale = currentSpeed / magnitude;
@@ -285,55 +323,332 @@ function setBallSpeed(speed) {
   }
 }
 
-function wireControls() {
+function updateElapsedDisplay() {
+  if (!elapsedLabel) {
+    return;
+  }
+  const now = performance.now();
+  const runningTime = started && !paused && startTime !== null ? now - startTime : 0;
+  const elapsedMs = started ? accumulatedTime + runningTime : 0;
+  elapsedLabel.textContent = `${(elapsedMs / 1000).toFixed(1)}s`;
+}
+
+function updateFpsDisplay() {
+  if (!fpsLabel) {
+    return;
+  }
+  const now = performance.now();
+  framesThisSecond += 1;
+  const delta = now - lastFpsUpdate;
+  fpsAccumulator += delta;
+  if (fpsAccumulator >= 500) {
+    const fps = Math.round((framesThisSecond / fpsAccumulator) * 1000);
+    fpsLabel.textContent = `${fps} fps`;
+    fpsAccumulator = 0;
+    framesThisSecond = 0;
+  }
+  lastFpsUpdate = now;
+}
+
+function resetFpsTracking() {
+  framesThisSecond = 0;
+  fpsAccumulator = 0;
+  lastFpsUpdate = performance.now();
+  if (fpsLabel) {
+    fpsLabel.textContent = started ? "-- fps" : "0 fps";
+  }
+}
+
+function updateSpeedUI(speed) {
+  if (speedReadout) {
+    speedReadout.textContent = Math.round(speed).toString();
+  }
   if (speedSlider) {
-    const initialSpeed = Number(speedSlider.value);
-    speedReadout.textContent = initialSpeed.toString();
-    setBallSpeed(initialSpeed);
+    const max = Number(speedSlider.max);
+    const clamped = Math.min(speed, Number.isNaN(max) ? speed : max);
+    speedSlider.value = clamped.toString();
+  }
+}
+
+function updateControlAvailability() {
+  if (startBtn) {
+    const waitingForVoices = !voicesReady && !started;
+    startBtn.disabled = started || !voicesReady;
+    if (waitingForVoices) {
+      startBtn.textContent = "Start (loading voices…)";
+      startBtn.title = "Waiting for speech voices to load.";
+    } else {
+      startBtn.textContent = "Start";
+      startBtn.title = started ? "Simulation already running." : "Begin the simulation.";
+    }
   }
 
-  pauseBtn?.addEventListener("click", () => {
-    if (paused) {
+  if (pauseBtn) {
+    pauseBtn.disabled = !started || paused;
+  }
+
+  if (resumeBtn) {
+    resumeBtn.disabled = !started || !paused;
+  }
+
+  if (resetBtn) {
+    resetBtn.disabled = !started;
+  }
+}
+
+function startSimulation() {
+  if (started || !voicesReady) {
+    return;
+  }
+  started = true;
+  paused = false;
+  accumulatedTime = 0;
+  const now = performance.now();
+  startTime = now;
+  lastTick = now;
+  resetFpsTracking();
+  updateElapsedDisplay();
+  updateControlAvailability();
+  requestAnimationFrame(tick);
+  if (ttsEnabled) {
+    announceShape();
+  }
+}
+
+const preferredVoiceLocales = ["en-US", "en-GB", "en-AU", "en-CA", "en-IN"];
+
+function voiceQualityScore(voice) {
+  let score = 0;
+  const lang = (voice.lang || "").toLowerCase();
+  if (preferredVoiceLocales.some((locale) => lang.startsWith(locale.toLowerCase()))) {
+    score += 20;
+  }
+  if (/female|woman|feminine/i.test(voice.name)) {
+    score += 6;
+  }
+  if (/natural|neural/i.test(voice.name)) {
+    score += 5;
+  }
+  if (/google|samantha|serena|ava|karen|olivia/i.test(voice.name)) {
+    score += 4;
+  }
+  if (!voice.localService) {
+    score += 2;
+  }
+  if (/english/i.test(voice.lang || "")) {
+    score += 3;
+  }
+  return score;
+}
+
+function choosePreferredVoice(voices) {
+  if (!voices.length) {
+    return null;
+  }
+  let best = voices[0];
+  let bestScore = voiceQualityScore(best);
+  for (const voice of voices.slice(1)) {
+    const score = voiceQualityScore(voice);
+    if (score > bestScore) {
+      best = voice;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function refreshVoiceOptions() {
+  if (!supportsSpeech || !voiceSelect) {
+    return;
+  }
+  availableVoices = window.speechSynthesis.getVoices();
+  voiceSelect.innerHTML = "";
+
+  if (availableVoices.length === 0) {
+    const option = document.createElement("option");
+    option.textContent = "No voices available";
+    voiceSelect.appendChild(option);
+    voiceSelect.disabled = true;
+    voiceSelect.title = "No speech voices available.";
+    voicesReady = false;
+    updateControlAvailability();
+    return;
+  }
+
+  availableVoices = [...availableVoices].sort((a, b) => {
+    const scoreDiff = voiceQualityScore(b) - voiceQualityScore(a);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  const fragment = document.createDocumentFragment();
+  let localeNames;
+  try {
+    localeNames = new Intl.DisplayNames([navigator.language || "en"], { type: "language" });
+  } catch (_error) {
+    localeNames = null;
+  }
+  for (const voice of availableVoices) {
+    const option = document.createElement("option");
+    const localeLabel = localeNames ? localeNames.of(voice.lang) ?? voice.lang : voice.lang;
+    option.value = voice.voiceURI;
+    option.textContent = `${voice.name} – ${localeLabel}`;
+    fragment.appendChild(option);
+  }
+  voiceSelect.appendChild(fragment);
+
+  const previousVoiceId = selectedVoiceId;
+  const previousVoice = selectedVoiceId
+    ? availableVoices.find((voice) => voice.voiceURI === selectedVoiceId)
+    : null;
+  selectedVoice = previousVoice ?? choosePreferredVoice(availableVoices);
+  selectedVoiceId = selectedVoice ? selectedVoice.voiceURI : null;
+
+  if (selectedVoiceId) {
+    voiceSelect.value = selectedVoiceId;
+  }
+
+  voiceSelect.disabled = !ttsEnabled || availableVoices.length === 0;
+  if (!voiceSelect.disabled) {
+    voiceSelect.title = "Select a preferred voice.";
+  }
+
+  if (ttsEnabled && selectedVoiceId && selectedVoiceId !== previousVoiceId && shapeNameLabel?.textContent) {
+    speakName(shapeNameLabel.textContent);
+  }
+
+  voicesReady = availableVoices.length > 0;
+  updateControlAvailability();
+}
+
+function initVoices() {
+  if (!supportsSpeech || !voiceSelect) {
+    return;
+  }
+
+  refreshVoiceOptions();
+  const synth = window.speechSynthesis;
+  if (typeof synth.addEventListener === "function") {
+    synth.addEventListener("voiceschanged", refreshVoiceOptions);
+  } else {
+    synth.onvoiceschanged = refreshVoiceOptions;
+  }
+  // Trigger voice loading for some browsers.
+  synth.getVoices();
+}
+
+function wireControls() {
+  if (speedSlider) {
+    speedSlider.value = config.ballSpeed.toString();
+    const initialSpeed = Number(speedSlider.value);
+    setBallSpeed(initialSpeed);
+    updateSpeedUI(currentSpeed);
+  }
+
+  if (accelToggle) {
+    accelToggle.checked = accelEnabled;
+  }
+
+  if (supportsSpeech) {
+    initVoices();
+  } else if (voiceSelect) {
+    voiceSelect.innerHTML = "<option>Speech not supported</option>";
+    voiceSelect.disabled = true;
+    availableVoices = [];
+    selectedVoice = null;
+    selectedVoiceId = null;
+    voiceSelect.title = "Text-to-speech not supported in this browser.";
+    voicesReady = true;
+  }
+
+  startBtn?.addEventListener("click", () => {
+    if (started || !voicesReady) {
       return;
     }
+    startSimulation();
+  });
+
+  pauseBtn?.addEventListener("click", () => {
+    if (paused || !started) {
+      return;
+    }
+    const now = performance.now();
+    if (startTime !== null) {
+      accumulatedTime += now - startTime;
+    }
+    startTime = null;
     paused = true;
-    pauseBtn.disabled = true;
-    resumeBtn.disabled = false;
     if (supportsSpeech) {
       window.speechSynthesis.cancel();
     }
+    updateElapsedDisplay();
+    updateControlAvailability();
   });
 
   resumeBtn?.addEventListener("click", () => {
-    if (!paused) {
+    if (!paused || !started) {
       return;
     }
     paused = false;
-    resumeBtn.disabled = true;
-    pauseBtn.disabled = false;
-    lastTick = performance.now();
+    const now = performance.now();
+    startTime = now;
+    lastTick = now;
+    updateElapsedDisplay();
+    updateControlAvailability();
   });
 
   resetBtn?.addEventListener("click", () => {
+    if (!started) {
+      return;
+    }
     totalSides = 3;
     polygon = buildPolygon(totalSides);
     ball.position.x = canvas.width / 2;
     ball.position.y = canvas.height / 2;
     ball.velocity = randomVelocity();
+    setBallSpeed(config.ballSpeed);
     paused = false;
-    pauseBtn.disabled = false;
-    resumeBtn.disabled = true;
-    lastTick = performance.now();
+    const now = performance.now();
+    lastTick = now;
+    startTime = now;
+    accumulatedTime = 0;
     if (supportsSpeech) {
       window.speechSynthesis.cancel();
     }
     announceShape();
+    if (accelToggle) {
+      accelToggle.checked = accelEnabled;
+    }
+    if (speedSlider) {
+      speedSlider.value = config.ballSpeed.toString();
+    }
+    updateSpeedUI(currentSpeed);
+    updateElapsedDisplay();
+    updateControlAvailability();
   });
 
   speedSlider?.addEventListener("input", (event) => {
-    const value = Number(event.target.value);
-    speedReadout.textContent = value.toString();
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+    const value = Number(target.value);
     setBallSpeed(value);
+    updateSpeedUI(currentSpeed);
+  });
+
+  accelToggle?.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+    accelEnabled = target.checked;
+    if (!accelEnabled) {
+      setBallSpeed(currentSpeed);
+      updateSpeedUI(currentSpeed);
+    }
   });
 
   if (!supportsSpeech) {
@@ -343,16 +658,46 @@ function wireControls() {
       ttsToggle.disabled = true;
       ttsToggle.title = "Text-to-speech not supported in this browser.";
     }
+    if (voiceSelect) {
+      voiceSelect.disabled = true;
+      voiceSelect.title = "Text-to-speech not supported in this browser.";
+    }
   } else {
     ttsToggle?.addEventListener("change", (event) => {
       ttsEnabled = event.target.checked;
       if (!ttsEnabled) {
         window.speechSynthesis.cancel();
+        if (voiceSelect) {
+          voiceSelect.disabled = true;
+          voiceSelect.title = "Enable speech to choose a voice.";
+        }
       } else {
+        if (voiceSelect && availableVoices.length > 0) {
+          voiceSelect.disabled = false;
+          voiceSelect.title = "Select a preferred voice.";
+        }
         announceShape();
       }
     });
+
+    voiceSelect?.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement)) {
+        return;
+      }
+      const chosen = availableVoices.find((voice) => voice.voiceURI === target.value);
+      if (chosen) {
+        selectedVoice = chosen;
+        selectedVoiceId = chosen.voiceURI;
+        if (ttsEnabled) {
+          const currentName = shapeNameLabel?.textContent || polygonName(totalSides);
+          speakName(currentName);
+        }
+      }
+    });
   }
+
+  updateControlAvailability();
 }
 
 init();
